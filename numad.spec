@@ -1,6 +1,6 @@
 Name: numad
 Version: 0.5
-Release: 10.20140620git%{?dist}
+Release: 11.20140620git%{?dist}
 Summary: NUMA user daemon
 
 License: LGPLv2
@@ -69,6 +69,10 @@ if [ $1 -eq 2 ]; then
 fi
 
 %changelog
+* Tue Aug 26 2014 Jan Synáček <jsynacek@redhat.com> - 0.5-11.20140620git
+- Release bump
+- Related: #1011908
+
 * Mon Jun 23 2014 Jan Synáček <jsynacek@redhat.com> - 0.5-10.20140620git
 - Version update
 - Resolves: #872524 #999062 #1011908
