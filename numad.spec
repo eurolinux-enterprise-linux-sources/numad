@@ -1,6 +1,6 @@
 Name: numad
 Version: 0.5
-Release: 9.20130814git%{?dist}
+Release: 10.20140620git%{?dist}
 Summary: NUMA user daemon
 
 License: LGPLv2
@@ -33,7 +33,7 @@ and memory to minimize memory latency and thus provide optimum performance.
 %patch1 -p1
 
 %build
-make CFLAGS="-std=gnu99 -g" LDFLAGS="-lpthread -lrt"
+make CFLAGS="-std=gnu99 -g" LDFLAGS="-lpthread -lrt -lm"
 
 %install
 mkdir -p %{buildroot}%{_bindir}
@@ -69,6 +69,10 @@ if [ $1 -eq 2 ]; then
 fi
 
 %changelog
+* Mon Jun 23 2014 Jan Synáček <jsynacek@redhat.com> - 0.5-10.20140620git
+- Version update
+- Resolves: #872524 #999062 #1011908
+
 * Wed Aug 14 2013 Jan Synáček <jsynacek@redhat.com> - 0.5-9.20130814git
 - Version update
 - Resolves: #987559 #987563
