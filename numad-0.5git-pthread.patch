@@ -1,0 +1,11 @@
+--- Makefile.orig	2012-09-11 08:29:18.965821127 +0200
++++ Makefile	2012-09-11 08:29:29.391803358 +0200
+@@ -31,7 +31,7 @@
+ 
+ all: numad
+ 
+-numad: numad.o -lpthread -lrt
++numad: numad.o
+ 
+ AR ?= ar
+ RANLIB ?= ranlib
