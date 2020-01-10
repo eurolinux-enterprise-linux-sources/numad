@@ -1,6 +1,6 @@
 Name: numad
 Version: 0.5
-Release: 8.20121015git%{?dist}
+Release: 9.20130814git%{?dist}
 Summary: NUMA user daemon
 
 License: LGPLv2
@@ -9,8 +9,9 @@ URL: http://git.fedorahosted.org/git/?p=numad.git
 # The source for this package was pulled from upstream's vcs.  Use the
 # following commands to generate the tarball:
 #   git clone git://git.fedorahosted.org/numad.git numad-0.5git
-#   tar cJf numad-0.5git.tar.xz numad-0.5git/
+#   tar -cJ --exclude-vcs -f numad-0.5git.tar.xz numad-0.5git/
 Source0: %{name}-%{version}git.tar.xz
+Source1: %{name}.logrotate
 Patch0: numad-0.5git-pthread.patch
 Patch1: numad-0.5git-version.patch
 
@@ -36,17 +37,19 @@ make CFLAGS="-std=gnu99 -g" LDFLAGS="-lpthread -lrt"
 
 %install
 mkdir -p %{buildroot}%{_bindir}
-mkdir -p %{buildroot}%{_sysconfdir}
+mkdir -p %{buildroot}%{_sysconfdir}/logrotate.d
 mkdir -p %{buildroot}%{_initddir}
 mkdir -p %{buildroot}%{_mandir}/man8/
 install -p -m 644 numad.conf %{buildroot}%{_sysconfdir}/
 install -p -m 755 numad.init %{buildroot}%{_initddir}/numad
+install -p -m 644 %SOURCE1 %{buildroot}%{_sysconfdir}/logrotate.d/%{name}
 make install prefix=%{buildroot}/usr
 
 %files
 %{_bindir}/numad
 %{_initddir}/numad
 %config(noreplace) %{_sysconfdir}/numad.conf
+%config(noreplace) %{_sysconfdir}/logrotate.d/numad
 %doc %{_mandir}/man8/numad.8.gz
 
 %post
@@ -66,6 +69,12 @@ if [ $1 -eq 2 ]; then
 fi
 
 %changelog
+* Wed Aug 14 2013 Jan Synáček <jsynacek@redhat.com> - 0.5-9.20130814git
+- Version update
+- Resolves: #987559 #987563
+- Add logrotate config
+- Resolves: #913546
+
 * Mon Dec 03 2012 Jan Synáček <jsynacek@redhat.com> - 0.5-8.20121015git
 - Version update for beta
 - Related: #830919

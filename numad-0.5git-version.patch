@@ -1,15 +1,38 @@
 --- a/numad.c	2012-10-15 13:43:57.000000000 +0200
-+++ b/numad.c	2012-12-03 13:39:18.000000000 +0100
++++ b/numad.c	2013-08-14 07:53:22.521941310 +0200
+@@ -19,7 +19,7 @@ Inc., 59 Temple Place, Suite 330, Boston
+ */ 
+ 
+ 
+-// Compile with: gcc -O -std=gnu99 -Wall -pthread -o numad numad.c -lrt
++// Compile with: gcc -std=gnu99 -O -Wall -pthread -o numad numad.c -lrt
+ 
+ 
+ #define _GNU_SOURCE
 @@ -54,7 +54,7 @@ Inc., 59 Temple Place, Suite 330, Boston
  #include <values.h>
  
  
 -#define VERSION_STRING "20121015"
-+#define VERSION_STRING "20121130"
++#define VERSION_STRING "20130814"
  
  
  #define VAR_RUN_FILE "/var/run/numad.pid"
-@@ -112,6 +112,7 @@ int min_interval = MIN_INTERVAL;
+@@ -86,6 +86,7 @@ char *cpuset_dir_list[] =  {
+ #define MAX_INTERVAL 15
+ #define CPU_THRESHOLD     50
+ #define MEMORY_THRESHOLD 300
++#define THP_SCAN_SLEEP_MS 1000
+ #define TARGET_UTILIZATION_PERCENT 85
+ #define IMPROVEMENT_THRESHOLD_PERCENT 5
+ 
+@@ -107,11 +108,13 @@ int num_cpus = 0;
+ int num_nodes = 0;
+ int page_size_in_bytes = 0;
+ int huge_page_size_in_bytes = 0;
++int thp_scan_sleep_ms = THP_SCAN_SLEEP_MS;
+ 
+ int min_interval = MIN_INTERVAL;
  int max_interval = MAX_INTERVAL;
  int target_utilization  = TARGET_UTILIZATION_PERCENT;
  int scan_all_processes = 1;
@@ -17,7 +40,7 @@
  
  pthread_mutex_t pid_list_mutex;
  pthread_mutex_t node_info_mutex;
-@@ -197,7 +198,7 @@ void init_msg_queue() {
+@@ -197,7 +200,7 @@ void init_msg_queue() {
      msg_qid = msgget(msg_key, msg_flg);
      if (msg_qid < 0) {
          numad_log(LOG_CRIT, "msgget failed\n");
@@ -26,7 +49,7 @@
      }
      flush_msg_queue();
  }
-@@ -205,7 +206,7 @@ void init_msg_queue() {
+@@ -205,7 +208,7 @@ void init_msg_queue() {
  void recv_msg(msg_p m) {
      if (msgrcv(msg_qid, m, sizeof(msg_body_t), getpid(), 0) < 0) {
          numad_log(LOG_CRIT, "msgrcv failed\n");
@@ -35,8 +58,29 @@
      }
      // printf("Received: >>%s<< from process %d\n", m->body.text, m->body.src_pid);
  }
-@@ -273,8 +274,8 @@ typedef struct id_list {
+@@ -271,10 +274,29 @@ typedef struct id_list {
+ #define  OR_LISTS( or_list_p, list_1_p, list_2_p)  CPU_OR_S( or_list_p->bytes,  or_list_p->set_p, list_1_p->set_p, list_2_p->set_p)
+ #define XOR_LISTS(xor_list_p, list_1_p, list_2_p) CPU_XOR_S(xor_list_p->bytes, xor_list_p->set_p, list_1_p->set_p, list_2_p->set_p)
  
++int negate_list(id_list_p list_p) {
++    if (list_p == NULL) {
++        numad_log(LOG_CRIT, "Cannot negate a NULL list\n");
++        exit(EXIT_FAILURE);
++    }
++    if (num_cpus < 1) {
++        numad_log(LOG_CRIT, "No CPUs to negate in list!\n");
++        exit(EXIT_FAILURE);
++    }
++    for (int ix = 0;  (ix < num_cpus);  ix++) {
++        if (ID_IS_IN_LIST(ix, list_p)) {
++            CLR_ID_IN_LIST(ix, list_p);
++        } else {
++            ADD_ID_TO_LIST(ix, list_p);
++        }
++    }
++    return NUM_IDS_IN_LIST(list_p);
++}
++
  int add_ids_to_list_from_str(id_list_p list_p, char *s) {
      if (list_p == NULL) {
 -	numad_log(LOG_CRIT, "Cannot add to NULL list\n");
@@ -46,7 +90,7 @@
      }
      if ((s == NULL) || (strlen(s) == 0)) {
          goto return_list;
-@@ -308,8 +309,8 @@ return_list:
+@@ -308,8 +330,8 @@ return_list:
  int str_from_id_list(char *str_p, int str_size, id_list_p list_p) {
      char *p = str_p;
      if ((p == NULL) || (str_size < 3)) {
@@ -57,7 +101,7 @@
      }
      int n;
      if ((list_p == NULL) || ((n = NUM_IDS_IN_LIST(list_p)) == 0)) {
-@@ -378,7 +379,7 @@ typedef struct process_data {
+@@ -378,7 +400,7 @@ typedef struct process_data {
  
  
  // Hash table size must always be a power of two
@@ -66,7 +110,7 @@
  int process_hash_table_size = 0;
  int process_hash_collisions = 0;
  process_data_p process_hash_table = NULL;
-@@ -467,6 +468,7 @@ int process_hash_update(process_data_p n
+@@ -467,6 +489,7 @@ int process_hash_update(process_data_p n
      return new_hash_table_entry;
  }
  
@@ -74,7 +118,7 @@
  int process_hash_rehash(int old_ix) {
      // Given the index of a table entry that would otherwise be orphaned by
      // process_hash_remove(), reinsert into table using PID from existing record.
-@@ -486,12 +488,16 @@ int process_hash_remove(int pid) {
+@@ -486,12 +509,16 @@ int process_hash_remove(int pid) {
      if (ix >= 0) {
          // remove the target
          process_data_p dp = &process_hash_table[ix];
@@ -95,7 +139,7 @@
              if (process_hash_lookup(pid) < 0) {
                  if (process_hash_rehash(ix) < 0) {
                      numad_log(LOG_ERR, "rehash fail\n");
-@@ -512,6 +518,7 @@ void process_hash_table_expand() {
+@@ -512,6 +539,7 @@ void process_hash_table_expand() {
      } else {
          process_hash_table_size = MIN_PROCESS_HASH_TABLE_SIZE;
      }
@@ -103,7 +147,7 @@
      process_hash_table = malloc(process_hash_table_size * sizeof(process_data_t));
      if (process_hash_table == NULL) {
          numad_log(LOG_CRIT, "hash table malloc failed\n");
-@@ -531,6 +538,18 @@ void process_hash_table_expand() {
+@@ -531,6 +559,18 @@ void process_hash_table_expand() {
      }
  }
  
@@ -122,7 +166,7 @@
  void process_hash_table_cleanup(uint64_t update_time) {
      int cpusets_removed = 0;
      int num_hash_entries_used = 0;
-@@ -591,8 +610,10 @@ pid_list_p insert_pid_into_pid_list(pid_
+@@ -591,8 +631,10 @@ pid_list_p insert_pid_into_pid_list(pid_
      if (process_hash_table != NULL) {
          int hash_ix = process_hash_lookup(pid);
          if ((hash_ix >= 0) && (list_ptr == include_pid_list)) {
@@ -134,25 +178,84 @@
          }
      }
      // Check for duplicate pid first
-@@ -661,6 +682,8 @@ void print_usage_and_exit(char *prog_nam
+@@ -660,10 +702,14 @@ void print_usage_and_exit(char *prog_nam
+     fprintf(stderr, "-d for debug logging (same effect as '-l 7')\n");
      fprintf(stderr, "-D <CGROUP_MOUNT_POINT> to specify cgroup mount point\n");
      fprintf(stderr, "-h to print this usage info\n");
++    fprintf(stderr, "-H <N> to set THP scan_sleep_ms (default 1000)\n");
      fprintf(stderr, "-i [<MIN>:]<MAX> to specify interval seconds\n");
 +    fprintf(stderr, "-K 1  to keep interleaved memory spread across nodes\n");
 +    fprintf(stderr, "-K 0  to merge interleaved memory to local NUMA nodes\n");
      fprintf(stderr, "-l <N> to specify logging level (usually 5, 6, or 7)\n");
      fprintf(stderr, "-p <PID> to add PID to inclusion pid list\n");
      fprintf(stderr, "-r <PID> to remove PID from explicit pid lists\n");
-@@ -724,7 +747,7 @@ void check_prereqs(char *prog_name) {
-                 fprintf(stderr,       "Looks like transparent hugepage scan time in %s is %d ms.\n", thp_scan_fname, ms);
-                 fprintf(stderr, "Consider increasing the frequency of THP scanning,\n");
-                 fprintf(stderr, "by echoing a smaller number (e.g. 100) to %s\n", thp_scan_fname);
++    fprintf(stderr, "-R <CPU_LIST> to reserve some CPUs for non-numad use\n");
+     fprintf(stderr, "-S 1  to scan all processes\n");
+     fprintf(stderr, "-S 0  to scan only explicit PID list processes\n");
+     fprintf(stderr, "-u <N> to specify target utilization percent (default 85)\n");
+@@ -675,6 +721,28 @@ void print_usage_and_exit(char *prog_nam
+ }
+ 
+ 
++void set_thp_scan_sleep_ms(int new_ms) {
++    char *thp_scan_fname = "/sys/kernel/mm/transparent_hugepage/khugepaged/scan_sleep_millisecs";
++    int fd = open(thp_scan_fname, O_RDWR, 0);
++    if (fd >= 0) {
++        char buf[BUF_SIZE];
++        int bytes = read(fd, buf, BUF_SIZE);
++        if (bytes > 0) {
++            int cur_ms;
++            char *p = buf;
++            CONVERT_DIGITS_TO_NUM(p, cur_ms);
++            if (cur_ms != new_ms) {
++                lseek(fd, 0, SEEK_SET);
++                numad_log(LOG_NOTICE, "Changing THP scan time in %s from %d to %d ms.\n", thp_scan_fname, cur_ms, new_ms);
++                sprintf(buf, "%d\n", new_ms);
++                write(fd, buf, strlen(buf));
++            }
++        }
++        close(fd);
++    }
++}
++
++
+ void check_prereqs(char *prog_name) {
+     // Verify cpusets are available on this system.
+     char **dir = &cpuset_dir_list[0];
+@@ -707,30 +775,8 @@ void check_prereqs(char *prog_name) {
+         fprintf(stderr, "\n");
+         exit(EXIT_FAILURE);
+     }
+-    // Check on THP scan sleep time.
+-    char *thp_scan_fname = "/sys/kernel/mm/redhat_transparent_hugepage/khugepaged/scan_sleep_millisecs";
+-    int fd = open(thp_scan_fname, O_RDONLY, 0);
+-    if (fd >= 0) {
+-        int ms;
+-        char buf[BUF_SIZE];
+-        int bytes = read(fd, buf, BUF_SIZE);
+-        close(fd);
+-        if (bytes > 0) {
+-            char *p = buf;
+-            CONVERT_DIGITS_TO_NUM(p, ms);
+-            if (ms > 150) {
+-                fprintf(stderr, "\n");
+-                numad_log(LOG_NOTICE, "Looks like transparent hugepage scan time in %s is %d ms.\n", thp_scan_fname, ms);
+-                fprintf(stderr,       "Looks like transparent hugepage scan time in %s is %d ms.\n", thp_scan_fname, ms);
+-                fprintf(stderr, "Consider increasing the frequency of THP scanning,\n");
+-                fprintf(stderr, "by echoing a smaller number (e.g. 100) to %s\n", thp_scan_fname);
 -                fprintf(stderr, "to more agressively (re)construct THPs.  For example:\n");
-+                fprintf(stderr, "to more aggressively (re)construct THPs.  For example:\n");
-                 fprintf(stderr, "# echo 100 > /sys/kernel/mm/redhat_transparent_hugepage/khugepaged/scan_sleep_millisecs\n");
-                 fprintf(stderr, "\n");
-             }
-@@ -857,19 +880,19 @@ int get_huge_page_size_in_bytes() {
+-                fprintf(stderr, "# echo 100 > /sys/kernel/mm/redhat_transparent_hugepage/khugepaged/scan_sleep_millisecs\n");
+-                fprintf(stderr, "\n");
+-            }
+-        }
+-    }
+-    // FIXME: ?? check for enabled ksmd, and recommend disabling ksm?
++    // Adjust kernel tunable to scan for THP more frequently...
++    set_thp_scan_sleep_ms(thp_scan_sleep_ms);
+ }
+ 
+ 
+@@ -857,19 +903,19 @@ int get_huge_page_size_in_bytes() {
      int huge_page_size = 0;;
      FILE *fs = fopen("/proc/meminfo", "r");
      if (!fs) {
@@ -182,7 +285,7 @@
      }
      fclose(fs);
      return huge_page_size * KILOBYTE;
-@@ -1099,8 +1122,8 @@ int node_and_digits(const struct dirent
+@@ -1099,8 +1145,8 @@ int node_and_digits(const struct dirent
      if (*p++ != 'd') return 0;
      if (*p++ != 'e') return 0;
      do {
@@ -193,7 +296,52 @@
      } while (*p != '\0');
      return 1;
  }
-@@ -1458,11 +1481,23 @@ id_list_p pick_numa_nodes(int pid, int c
+@@ -1108,6 +1154,8 @@ int node_and_digits(const struct dirent
+ 
+ id_list_p all_cpus_list_p = NULL;
+ id_list_p all_nodes_list_p = NULL;
++char *reserved_cpu_str = NULL;
++id_list_p reserved_cpu_mask_list_p = NULL;
+ uint64_t node_info_time_stamp = 0;
+ 
+ 
+@@ -1164,6 +1212,10 @@ int update_nodes() {
+                 // get cpulist from the cpulist string
+                 CLEAR_LIST(node[node_ix].cpu_list_p);
+                 int n = add_ids_to_list_from_str(node[node_ix].cpu_list_p, buf);
++                if (reserved_cpu_str != NULL) {
++                    AND_LISTS(node[node_ix].cpu_list_p, node[node_ix].cpu_list_p, reserved_cpu_mask_list_p);
++                    n = NUM_IDS_IN_LIST(node[node_ix].cpu_list_p);
++                }
+                 OR_LISTS(all_cpus_list_p, all_cpus_list_p, node[node_ix].cpu_list_p);
+                 node[node_ix].CPUs_total = n * ONE_HUNDRED;
+                 close(fd);
+@@ -1197,7 +1249,14 @@ int update_nodes() {
+         }
+         free(namelist);
+     }
+-    // Second, get the dynamic free memory and available CPU capacity
++    // Second, update the dynamic free memory and available CPU capacity
++    while (cpu_data_buf[cur_cpu_data_buf].time_stamp + 7 >= time_stamp) {
++        // Make sure at least 7/100 of a second has passed.
++        // Otherwise sleep for 1/10 second.
++	struct timespec ts = { 0, 100000000 }; 
++	nanosleep(&ts, &ts);
++	time_stamp = get_time_stamp();
++    }
+     update_cpu_data();
+     for (int node_ix = 0;  (node_ix < num_nodes);  node_ix++) {
+         int node_id = node[node_ix].node_id;
+@@ -1449,7 +1508,7 @@ int update_processes() {
+ 
+ 
+ 
+-id_list_p pick_numa_nodes(int pid, int cpus, int mbs) {
++id_list_p pick_numa_nodes(int pid, int cpus, int mbs, int assume_enough_cpus) {
+     char buf[BUF_SIZE];
+     char buf2[BUF_SIZE];
+     if (log_level >= LOG_DEBUG) {
+@@ -1458,11 +1517,23 @@ id_list_p pick_numa_nodes(int pid, int c
      int num_existing_mems = 0;
      static id_list_p existing_mems_list_p;
      CLEAR_LIST(existing_mems_list_p);
@@ -218,7 +366,7 @@
      // For existing processes, get miscellaneous process specific details
      int pid_ix;
      process_data_p p = NULL;
-@@ -1487,7 +1522,7 @@ id_list_p pick_numa_nodes(int pid, int c
+@@ -1487,7 +1558,7 @@ id_list_p pick_numa_nodes(int pid, int c
          }
          if (!fgets(buf, BUF_SIZE, fs)) {
              numad_log(LOG_WARNING, "Tried to research PID %d cpuset, but it apparently went away.\n", p->pid);
@@ -227,7 +375,7 @@
              return NULL;  // Assume the process terminated?
          }
          fclose(fs);
-@@ -1569,18 +1604,6 @@ id_list_p pick_numa_nodes(int pid, int c
+@@ -1569,18 +1640,6 @@ id_list_p pick_numa_nodes(int pid, int c
          // is expensive and should be minimized.  Also, old kernels dismantle
          // transparent huge pages while producing the numa_maps memory
          // information! 
@@ -246,8 +394,16 @@
          memset(process_MBs, 0, process_MBs_num_nodes * sizeof(uint64_t));
          snprintf(fname, FNAME_SIZE, "/proc/%d/numa_maps", pid);
          fs = fopen(fname, "r");
-@@ -1626,8 +1649,9 @@ id_list_p pick_numa_nodes(int pid, int c
-                 numad_log(LOG_DEBUG, "PROCESS_MBs[%d]: %ld\n", ix, process_MBs[ix]);
+@@ -1623,11 +1682,16 @@ id_list_p pick_numa_nodes(int pid, int c
+         for (int ix = 0;  (ix <= num_nodes);  ix++) {
+             process_MBs[ix] /= MEGABYTE;
+             if (log_level >= LOG_DEBUG) {
+-                numad_log(LOG_DEBUG, "PROCESS_MBs[%d]: %ld\n", ix, process_MBs[ix]);
++                if (ix == num_nodes) {
++                    numad_log(LOG_DEBUG, "Interleaved MBs: %ld\n", ix, process_MBs[ix]);
++                } else {
++                    numad_log(LOG_DEBUG, "PROCESS_MBs[%d]: %ld\n", ix, process_MBs[ix]);
++                }
              }
          }
 -        if (process_has_interleaved_memory) {
@@ -258,7 +414,26 @@
              p->flags |= PROCESS_FLAG_INTERLEAVED;
              p->bind_time_stamp = get_time_stamp();
              if (log_level >= LOG_DEBUG) {
-@@ -1690,8 +1714,15 @@ id_list_p pick_numa_nodes(int pid, int c
+@@ -1665,12 +1729,18 @@ id_list_p pick_numa_nodes(int pid, int c
+         if (pid > 0) {
+             tmp_node[ix].MBs_free  += ((process_MBs[ix] * 12) / 8);
+         }
++        if (tmp_node[ix].MBs_free > tmp_node[ix].MBs_total) {
++            tmp_node[ix].MBs_free = tmp_node[ix].MBs_total;
++        }
+         if ((num_existing_mems > 0) && (ID_IS_IN_LIST(ix, existing_mems_list_p))) {
+             tmp_node[ix].CPUs_free = node_CPUs_free_for_this_process;
+         }
+         if (tmp_node[ix].CPUs_free > tmp_node[ix].CPUs_total) {
+             tmp_node[ix].CPUs_free = tmp_node[ix].CPUs_total;
+         }
++        if (tmp_node[ix].CPUs_free < 1) { // force 1/100th CPU minimum
++            tmp_node[ix].CPUs_free = 1;
++        }
+         if (log_level >= LOG_DEBUG) {
+             numad_log(LOG_DEBUG, "PROCESS_CPUs[%d]: %ld\n", ix, tmp_node[ix].CPUs_free);
+         }
+@@ -1690,8 +1760,20 @@ id_list_p pick_numa_nodes(int pid, int c
      int prev_node_used = -1;
      // Continue to allocate more resources until request are met.
      // OK if not not quite all the CPU request is met.
@@ -271,12 +446,17 @@
 +        // underestimate the amount of CPUs needed.  Instead, err on the side
 +        // of providing too many resources.  So, no flexing here...
 +        cpu_flex = 0;
++    } else if (assume_enough_cpus) {
++        // If CPU requests "should" fit, then just make
++        // cpu_flex big enough to meet the cpu request. 
++        // This causes memory to be the only consideration.
++        cpu_flex = cpus + 1;
 +    }
 +    while ((mbs > 0) || (cpus > cpu_flex)) {
          if (log_level >= LOG_DEBUG) {
              numad_log(LOG_DEBUG, "MBs: %d,  CPUs: %d\n", mbs, cpus);
          }
-@@ -1834,6 +1865,10 @@ id_list_p pick_numa_nodes(int pid, int c
+@@ -1834,6 +1916,10 @@ id_list_p pick_numa_nodes(int pid, int c
              return NULL;
          }
      }
@@ -287,7 +467,23 @@
  try_memory_move_again:
      str_from_id_list(buf,  BUF_SIZE, existing_mems_list_p);
      str_from_id_list(buf2, BUF_SIZE, target_node_list_p);
-@@ -1974,89 +2009,112 @@ void *set_dynamic_options(void *arg) {
+@@ -1953,8 +2039,14 @@ int manage_loads() {
+         if (cpu_request > thread_limit) {
+             cpu_request = thread_limit;
+         }
++        long average_total_cpus = 0; 
++        for (int ix = 0;  (ix < num_nodes);  ix++) {
++            average_total_cpus += node[ix].CPUs_total;
++        }
++        average_total_cpus /= num_nodes;
++        int assume_enough_cpus = (cpu_request <= average_total_cpus);
+         pthread_mutex_lock(&node_info_mutex);
+-        id_list_p node_list_p = pick_numa_nodes(p->pid, cpu_request, mb_request);
++        id_list_p node_list_p = pick_numa_nodes(p->pid, cpu_request, mb_request, assume_enough_cpus);
+         // FIXME: ?? copy node_list_p to shorten mutex region?
+         if ((node_list_p != NULL) && (bind_process_and_migrate_memory(p->pid, p->cpuset_name, node_list_p, NULL))) {
+             // Shorten interval if actively moving processes
+@@ -1974,89 +2066,116 @@ void *set_dynamic_options(void *arg) {
      // int arg_value = *(int *)arg;
      char buf[BUF_SIZE];
      for (;;) {
@@ -339,6 +535,10 @@
 +        msg_t msg;
 +        recv_msg(&msg);
 +        switch (msg.body.cmd) {
++        case 'H':
++            thp_scan_sleep_ms = msg.body.arg1;
++            set_thp_scan_sleep_ms(thp_scan_sleep_ms);
++            break;
 +        case 'i':
 +            min_interval = msg.body.arg1;
 +            max_interval = msg.body.arg2;
@@ -406,7 +606,7 @@
 -	    numad_log(LOG_WARNING, "Unexpected msg command: %c %d %d %s from PID %d\n",
 +            pthread_mutex_lock(&node_info_mutex);
 +            update_nodes();
-+            id_list_p node_list_p = pick_numa_nodes(-1, msg.body.arg1, msg.body.arg2);
++            id_list_p node_list_p = pick_numa_nodes(-1, msg.body.arg1, msg.body.arg2, 0);
 +            str_from_id_list(buf, BUF_SIZE, node_list_p);
 +            pthread_mutex_unlock(&node_info_mutex);
 +            send_msg(msg.body.src_pid, 'w', 0, 0, buf);
@@ -467,25 +667,41 @@
              fprintf(stderr, "Can't parse arg value(s): %s\n", orig_p);
              exit(EXIT_FAILURE);
          }
-@@ -2078,6 +2136,7 @@ int main(int argc, char *argv[]) {
+@@ -2077,7 +2196,9 @@ void parse_two_arg_values(char *p, int *
+ int main(int argc, char *argv[]) {
      int opt;
      int d_flag = 0;
++    int H_flag = 0;
      int i_flag = 0;
 +    int K_flag = 0;
      int l_flag = 0;
      int p_flag = 0;
      int r_flag = 0;
-@@ -2087,7 +2146,7 @@ int main(int argc, char *argv[]) {
+@@ -2086,8 +2207,9 @@ int main(int argc, char *argv[]) {
+     int v_flag = 0;
      int w_flag = 0;
      int x_flag = 0;
++    int tmp_ms = 0;
      long list_pid = 0;
 -    while ((opt = getopt(argc, argv, "dD:hi:l:p:r:S:u:vVw:x:")) != -1) {
-+    while ((opt = getopt(argc, argv, "dD:hi:K:l:p:r:S:u:vVw:x:")) != -1) {
++    while ((opt = getopt(argc, argv, "dD:hH:i:K:l:p:r:R:S:u:vVw:x:")) != -1) {
          switch (opt) {
          case 'd':
              d_flag = 1;
-@@ -2101,7 +2160,11 @@ int main(int argc, char *argv[]) {
+@@ -2099,9 +2221,23 @@ int main(int argc, char *argv[]) {
+         case 'h':
+             print_usage_and_exit(argv[0]);
              break;
++        case 'H':
++            tmp_ms = atoi(optarg);
++            if ((tmp_ms > 9) && (tmp_ms < 1000001)) {
++                H_flag = 1;
++                thp_scan_sleep_ms = tmp_ms;
++            } else {
++		fprintf(stderr, "THP scan_sleep_ms must be > 9 and < 1000001\n");
++		exit(EXIT_FAILURE);
++	    }
++            break;
          case 'i':
              i_flag = 1;
 -            parse_two_arg_values(optarg, &min_interval, &max_interval, 1);
@@ -497,7 +713,17 @@
              break;
          case 'l':
              l_flag = 1;
-@@ -2137,7 +2200,7 @@ int main(int argc, char *argv[]) {
+@@ -2120,6 +2256,9 @@ int main(int argc, char *argv[]) {
+             include_pid_list = remove_pid_from_pid_list(include_pid_list, list_pid);
+             exclude_pid_list = remove_pid_from_pid_list(exclude_pid_list, list_pid);
+             break;
++        case 'R':
++            reserved_cpu_str = strdup(optarg);
++            break;
+         case 'S':
+             S_flag = 1;
+             scan_all_processes = (atoi(optarg) != 0);
+@@ -2137,7 +2276,7 @@ int main(int argc, char *argv[]) {
              break;
          case 'w':
              w_flag = 1;
@@ -506,7 +732,7 @@
              break;
          case 'x':
              x_flag = 1;
-@@ -2151,8 +2214,8 @@ int main(int argc, char *argv[]) {
+@@ -2151,8 +2290,8 @@ int main(int argc, char *argv[]) {
          }
      }
      if (argc > optind) {
@@ -517,7 +743,29 @@
      }
      if (i_flag) {
          if ((max_interval < min_interval) && (max_interval != 0)) {
-@@ -2174,6 +2237,9 @@ int main(int argc, char *argv[]) {
+@@ -2163,6 +2302,15 @@ int main(int argc, char *argv[]) {
+     open_log_file();
+     init_msg_queue();
+     num_cpus = get_num_cpus();
++    if (reserved_cpu_str != NULL) {
++        char buf[BUF_SIZE];
++        CLEAR_LIST(reserved_cpu_mask_list_p);
++        int n = add_ids_to_list_from_str(reserved_cpu_mask_list_p, reserved_cpu_str);
++        str_from_id_list(buf, BUF_SIZE, reserved_cpu_mask_list_p);
++        numad_log(LOG_NOTICE, "Reserving %d CPUs (%s) for non-numad use\n", n, buf);
++        // turn reserved list into a negated mask for later ANDing use...
++        negate_list(reserved_cpu_mask_list_p);
++    }
+     page_size_in_bytes = sysconf(_SC_PAGESIZE);
+     huge_page_size_in_bytes = get_huge_page_size_in_bytes();
+     // Figure out if this is the daemon, or a subsequent invocation
+@@ -2171,9 +2319,15 @@ int main(int argc, char *argv[]) {
+         // Daemon is already running.  So send dynamic options to persistant
+         // thread to handle requests, get the response (if any), and finish.
+         msg_t msg; 
++        if (H_flag) {
++            send_msg(daemon_pid, 'H', thp_scan_sleep_ms, 0, "");
++        }
          if (i_flag) {
              send_msg(daemon_pid, 'i', min_interval, max_interval, "");
          }
@@ -527,17 +775,17 @@
          if (d_flag || l_flag || v_flag) {
              send_msg(daemon_pid, 'l', log_level, 0, "");
          }
-@@ -2204,7 +2270,7 @@ int main(int argc, char *argv[]) {
+@@ -2204,7 +2358,7 @@ int main(int argc, char *argv[]) {
          sleep(2);
          update_nodes();
          numad_log(LOG_NOTICE, "Getting NUMA pre-placement advice for %d CPUs and %d MBs\n", requested_cpus, requested_mbs);
 -        id_list_p node_list_p = pick_numa_nodes(-1, (requested_cpus * ONE_HUNDRED), requested_mbs);
-+        id_list_p node_list_p = pick_numa_nodes(-1, requested_cpus, requested_mbs);
++        id_list_p node_list_p = pick_numa_nodes(-1, requested_cpus, requested_mbs, 0);
          str_from_id_list(buf, BUF_SIZE, node_list_p);
          fprintf(stdout, "%s\n", buf);
          close_log_file();
 --- a/numad.8	2012-10-15 13:43:57.000000000 +0200
-+++ b/numad.8	2012-12-03 13:39:18.000000000 +0100
++++ b/numad.8	2013-08-14 07:53:22.000000000 +0200
 @@ -1,7 +1,8 @@
  .TH "numad" "8" "1.0.0" "Bill Gray" "Administration"
  .SH "numad"
@@ -548,7 +796,13 @@
  .SH "SYNTAX"
  .LP 
  numad [\fI\-dhvV\fP]
-@@ -13,6 +14,9 @@ numad  [\fI\-D non-standard-cgroup-mount
+@@ -10,9 +11,15 @@
+ numad  [\fI\-D non-standard-cgroup-mount-point\fP]
+ .br 
+ .LP 
++numad  [\fI\-H THP_hugepage_scan_sleep_ms\fP]
++.br 
++.LP 
  numad  [\fI\-i [min_interval:]max_interval\fP]
  .br 
  .LP 
@@ -558,8 +812,21 @@
  numad  [\fI\-l log_level\fP]
  .br 
  .LP 
-@@ -36,11 +40,18 @@ numad  [\fI\-x PID\fP]
- 
+@@ -22,6 +29,9 @@
+ numad  [\fI\-r PID\fP]
+ .br 
+ .LP 
++numad  [\fI\-R reserved-CPU-list\fP]
++.br 
++.LP 
+ numad  [\fI\-S 0|1\fP]
+ .br 
+ .LP 
+@@ -33,14 +43,20 @@
+ .LP 
+ numad  [\fI\-x PID\fP]
+ .br 
+-
  .SH "DESCRIPTION"
  .LP 
 -Numad is a system daemon that monitors NUMA topology and usage. It will attempt
@@ -582,7 +849,23 @@
  .SH "OPTIONS"
  .LP 
  .TP 
-@@ -61,6 +72,16 @@ Sets the time interval that numad waits
+@@ -54,6 +70,15 @@
+ \fB\-h\fR
+ Display usage help information and then exit.
+ .TP 
++\fB\-H\fR  <\fITHP_scan_sleep_ms\fP>
++Set the desired transparent hugepage scan interval in ms.  The
++/sys/kernel/mm/tranparent_hugepage/khugepaged/scan_sleep_millisecs tunable is
++usually set to 10000ms by the operating system.  The default is changed by
++numad to be 1000ms, since it is helpful for the hugepage daemon to be more
++aggressive when memory moves between nodes.  If you don't like numad's choice
++of 1000ms, you can make the hugepage daemon more or less aggressive by
++specifying an alternate value with this option.
++.TP 
+ \fB\-i\fR <\fI[min_interval:]max_interval\fP>
+ Sets the time interval that numad waits between system scans, in seconds to
+ <\fImax_interval\fP>. Default <\fImax_interval\fP> is 15 seconds, default
+@@ -61,6 +86,16 @@
  cause the daemon to exit.  (This is the normal mechanism to terminate the
  daemon.)  A bigger <\fImax_interval\fP> will decrease numad overhead but also
  decrease responsiveness to changing loads.
@@ -599,7 +882,7 @@
  .TP 
  \fB\-l\fR <\fIlog_level\fP>
  Sets the log level to <\fIlog_level\fP>.  Reasonable choices are 5, 6, or 7.
-@@ -69,15 +90,15 @@ The default value is 5.
+@@ -69,18 +104,24 @@
  \fB\-p\fR <\fIPID\fP>
  Add PID to explicit inclusion list of processes to consider for managing, if
  the process also uses significant resources.  Multiple \fI\-p PID\fP options
@@ -618,7 +901,16 @@
  process lists per subsequent numad invocation.  Use with \-S and \-p and \-x to
  precisely control the scope of processes numad can manage.
  .TP
-@@ -110,7 +131,7 @@ Queries numad for the best NUMA nodes to
++\fB\-R\fR <\fICPU_LIST\fP>
++Specify a list of CPUs that numad should assume are reserved for non-numad use.
++No processes will be bound to the specified CPUs by numad.  This option is
++effective only when starting numad.  You cannot change reserved CPUs
++dynamically while numad is already running.
++.TP
+ \fB\-S\fR <\fI0|1\fP>
+ This option controls whether numad scans all system processes or only the
+ processes on the explicit inclusion PID list.  The default is to scan all
+@@ -110,7 +151,7 @@
  be specified as well <\fI:MB\fP> so numad can recommend NUMA nodes with
  available CPU capacity and adequate free memory.  This query option can be used
  regardless of whether numad is running as a daemon.  (An invocation using this
@@ -627,7 +919,7 @@
  start.) Output of this option is a string that contains a NUMA node list.  For
  example: 2\-3,6.  The recommended node list could be saved in a shell variable
  (e.g., NODES) and then used as the node list parameter in a
-@@ -122,7 +143,7 @@ command.  See numactl(8).
+@@ -122,7 +163,7 @@
  \fB\-x\fR <\fIPID\fP>
  Add PID to explicit exclusion list of processes to blacklist from managing.
  Multiple \fI\-x PID\fP options can be specified at daemon start, but after
@@ -636,3 +928,24 @@
  numad invocation.  Use with \-S to precisely control the scope of processes
  numad can manage.  
  .SH "FILES"
+@@ -138,14 +179,18 @@
+ None.
+ .SH "EXAMPLES"
+ .LP 
+-Numad is normally run as a system daemon and should be managed by the 
++Numad can be run as a system daemon and can be managed by the 
+ standard init mechanisms of the host.
+ .LP  
+ If interactive (manual) control is desired, you can start the daemon manually by typing:
+ .LP 
+ /usr/bin/numad
+ .LP
+-Subsequent numad invocations while the daemon is running can be used to dynamically change run-time options.
++Subsequent numad invocations while the daemon is running can be used to dynamically change most run-time options.
++.LP
++You can terminate numad from running by typing:
++.LP 
++/usr/bin/numad -i0
+ .SH "AUTHORS"
+ .LP 
+ Bill Gray <bgray@redhat.com>
