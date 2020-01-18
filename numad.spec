@@ -3,7 +3,7 @@
 
 Name: numad
 Version: 0.5
-Release: 17.20150602git%{?dist}
+Release: 18.20150602git%{?dist}
 Summary: NUMA user daemon
 
 License: LGPLv2
@@ -17,6 +17,7 @@ Source0: %{name}-%{version}git.tar.xz
 Source1: %{name}.logrotate
 Patch0: numad-0.5git-pthread.patch
 Patch1: numad-0.5git-version.patch
+Patch2: numad-0.5git-m-option.patch
 
 Requires: systemd-units, initscripts
 Requires(post): systemd-units, initscripts
@@ -34,6 +35,7 @@ and memory to minimize memory latency and thus provide optimum performance.
 %setup -q -n %{name}-%{version}git
 %patch0 -p0
 %patch1 -p1
+%patch2 -p1
 
 %build
 make CFLAGS="$RPM_OPT_FLAGS -std=gnu99" LDFLAGS="$RPM_LD_FLAGS -lpthread -lrt -lm"
@@ -65,6 +67,9 @@ make install prefix=%{buildroot}/usr
 %systemd_postun numad.service
 
 %changelog
+* Mon Oct 30 2017 Jan Synáček <jsynacek@redhat.com> - 0.5-18.20150602git
+- Fix -m option (#1506477)
+
 * Tue Aug 30 2016 Jan Synáček <jsynacek@redhat.com> - 0.5-17.20150602git
 - Fix the version patch (#1281711)
 
