@@ -2,7 +2,7 @@
 
 Name: numad
 Version: 0.5
-Release: 10.20121130git%{?dist}
+Release: 13.20140225git%{?dist}
 Summary: NUMA user daemon
 
 License: LGPLv2
@@ -13,7 +13,9 @@ URL: http://git.fedorahosted.org/git/?p=numad.git
 #   git clone git://git.fedorahosted.org/numad.git numad-0.5git
 #   tar --exclude-vcs -cJf numad-0.5git.tar.xz numad-0.5git/
 Source0: %{name}-%{version}git.tar.xz
+Source1: %{name}.logrotate
 Patch0: numad-0.5git-pthread.patch
+Patch1: numad-0.5git-update-20140225.patch
 
 Requires: systemd-units, initscripts
 Requires(post): systemd-units, initscripts
@@ -30,23 +32,26 @@ and memory to minimize memory latency and thus provide optimum performance.
 %prep
 %setup -q -n %{name}-%{version}git
 %patch0 -p0
+%patch1 -p1
 
 %build
-make CFLAGS="-std=gnu99 -g" LDFLAGS="-lpthread -lrt"
+make CFLAGS="$RPM_OPT_FLAGS -std=gnu99" LDFLAGS="$RPM_LD_FLAGS -lpthread -lrt -lm"
 
 %install
 mkdir -p %{buildroot}%{_bindir}
-mkdir -p %{buildroot}%{_sysconfdir}
+mkdir -p %{buildroot}%{_sysconfdir}/logrotate.d
 mkdir -p %{buildroot}%{_unitdir}
 mkdir -p %{buildroot}%{_mandir}/man8/
 install -p -m 644 numad.conf %{buildroot}%{_sysconfdir}/
 install -p -m 644 numad.service %{buildroot}%{_unitdir}/
+install -p -m 644 %SOURCE1 %{buildroot}%{_sysconfdir}/logrotate.d/%{name}
 make install prefix=%{buildroot}/usr
 
 %files
 %{_bindir}/numad
 %{_unitdir}/numad.service
 %config(noreplace) %{_sysconfdir}/numad.conf
+%config(noreplace) %{_sysconfdir}/logrotate.d/numad
 %doc %{_mandir}/man8/numad.8.gz
 
 %post
@@ -59,6 +64,18 @@ make install prefix=%{buildroot}/usr
 %systemd_postun numad.service
 
 %changelog
+* Wed Mar 26 2014 Jan Synáček <jsynacek@redhat.com> - 0.5-13.20140225git
+- Build with $RPM_OPT_FLAGS and $RPM_LD_FLAGS
+- Resolves: #1070781
+
+* Fri Feb 28 2014 Jan Synáček <jsynacek@redhat.com> - 0.5-12.20140225git
+- Update source (20140225) and manpage
+- Add logrotate config
+- Resolves: #853232
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 0.5-11.20121130git
+- Mass rebuild 2013-12-27
+
 * Thu Feb 14 2013 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 0.5-10.20121130git
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_19_Mass_Rebuild
 
