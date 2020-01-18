@@ -1,0 +1,17 @@
+Remove linked libraries from Makefile. They break rebuilds from srpms on some
+architectures. The linker flags are supplied from the spec.
+
+Author: Jan Synacek <jsynacek@redhat.com>
+RH-Bugzilla: #825153
+
+--- Makefile.orig	2012-09-11 08:29:18.965821127 +0200
++++ Makefile	2012-09-11 08:29:29.391803358 +0200
+@@ -31,7 +31,7 @@
+ 
+ all: numad
+ 
+-numad: numad.o -lpthread -lrt
++numad: numad.o
+ 
+ AR ?= ar
+ RANLIB ?= ranlib
