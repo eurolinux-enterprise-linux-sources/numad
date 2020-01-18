@@ -1,8 +1,9 @@
 %global systemctl_bin /usr/bin/systemctl
+%global _hardened_build 1
 
 Name: numad
 Version: 0.5
-Release: 14.20140620git%{?dist}
+Release: 17.20150602git%{?dist}
 Summary: NUMA user daemon
 
 License: LGPLv2
@@ -15,7 +16,7 @@ URL: http://git.fedorahosted.org/git/?p=numad.git
 Source0: %{name}-%{version}git.tar.xz
 Source1: %{name}.logrotate
 Patch0: numad-0.5git-pthread.patch
-Patch1: numad-0.5git-update-20140225.patch
+Patch1: numad-0.5git-version.patch
 
 Requires: systemd-units, initscripts
 Requires(post): systemd-units, initscripts
@@ -64,6 +65,15 @@ make install prefix=%{buildroot}/usr
 %systemd_postun numad.service
 
 %changelog
+* Tue Aug 30 2016 Jan Synáček <jsynacek@redhat.com> - 0.5-17.20150602git
+- Fix the version patch (#1281711)
+
+* Mon Jul 11 2016 Jan Synáček <jsynacek@redhat.com> - 0.5-16.20150602git
+- Version update (#1281711 #1238614 #1235164)
+
+* Thu May 26 2016 Jan Synáček <jsynacek@redhat.com> - 0.5-15.20140620git
+- Harden the build (#1092544)
+
 * Fri Sep  5 2014 Jan Synáček <jsynacek@redhat.com> - 0.5-14.20140620git
 - Version update
 - Resolves: #1112109
