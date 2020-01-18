@@ -2,7 +2,7 @@
 
 Name: numad
 Version: 0.5
-Release: 13.20140225git%{?dist}
+Release: 14.20140620git%{?dist}
 Summary: NUMA user daemon
 
 License: LGPLv2
@@ -64,6 +64,10 @@ make install prefix=%{buildroot}/usr
 %systemd_postun numad.service
 
 %changelog
+* Fri Sep  5 2014 Jan Synáček <jsynacek@redhat.com> - 0.5-14.20140620git
+- Version update
+- Resolves: #1112109
+
 * Wed Mar 26 2014 Jan Synáček <jsynacek@redhat.com> - 0.5-13.20140225git
 - Build with $RPM_OPT_FLAGS and $RPM_LD_FLAGS
 - Resolves: #1070781
